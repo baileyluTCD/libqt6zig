@@ -5,6 +5,7 @@ pub fn build(b: *std.Build) !void {
     const linkage = b.option(std.builtin.LinkMode, "linkage", "Link mode for libqt6zig") orelse .static;
     const enable_workaround = b.option(bool, "enable-workaround", "Enable workaround for missing Qt C++ headers") orelse false;
     const skip_restricted = b.option(bool, "skip-restricted", "Skip restricted libraries") orelse false;
+    const extra_include_paths = b.option([]const []const u8, "extra_include_paths", "Extra paths to look for qt6 includes on") orelse &.{};
     const optimize = standardOptimizeOption(b, .{});
 
     const is_bsd_family = switch (target.result.os.tag) {
@@ -47,7 +48,7 @@ pub fn build(b: *std.Build) !void {
     if (cpp_sources.items.len == 0)
         @panic("No .cpp files found.\n");
 
-    const qt_include_path: []const []const u8 = switch (target.result.os.tag) {
+    const default_qt_include_paths: []const []const u8 = switch (target.result.os.tag) {
         .dragonfly, .freebsd, .netbsd, .openbsd => &.{"/usr/local/include/qt6"},
         .linux => switch (target.result.cpu.arch) {
             .x86_64 => &.{
@@ -67,6 +68,11 @@ pub fn build(b: *std.Build) !void {
         .windows => try generateWindowsBuildPaths(allocator),
         else => @panic("Unsupported OS"),
     };
+
+    var qt_include_paths: std.ArrayListUnmanaged([]const u8) = .empty;
+
+    try qt_include_paths.appendSlice(allocator, default_qt_include_paths);
+    try qt_include_paths.appendSlice(allocator, extra_include_paths);
 
     const qt_modules = &.{
         "QtCore",
@@ -93,7 +99,7 @@ pub fn build(b: *std.Build) !void {
         "-O2",
     };
 
-    var cpp_flags: [][]const u8 = try allocator.alloc([]const u8, base_cpp_flags.len + qt_include_path.len + (qt_modules.len * qt_include_path.len));
+    var cpp_flags: [][]const u8 = try allocator.alloc([]const u8, base_cpp_flags.len + qt_include_paths.items.len + (qt_modules.len * qt_include_paths.items.len));
 
     // Add base flags
     var flags_index: usize = 0;
@@ -103,7 +109,7 @@ pub fn build(b: *std.Build) !void {
     }
 
     // Add include paths
-    for (qt_include_path) |qt_path| {
+    for (qt_include_paths.items) |qt_path| {
         cpp_flags[flags_index] = try std.fmt.allocPrint(allocator, "-I{s}", .{qt_path});
         flags_index += 1;
     }
@@ -114,13 +120,13 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
-    for (qt_include_path) |qt_path| {
+    for (qt_include_paths.items) |qt_path| {
         translate_c.addIncludePath(std.Build.LazyPath{ .cwd_relative = qt_path });
     }
 
     // Add Qt module include paths
     inline for (qt_modules) |module| {
-        for (qt_include_path) |qt_path| {
+        for (qt_include_paths.items) |qt_path| {
             cpp_flags[flags_index] = try std.fmt.allocPrint(allocator, "-I{s}/{s}", .{ qt_path, module });
             const flagPath = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ qt_path, module });
             translate_c.addIncludePath(std.Build.LazyPath{ .cwd_relative = flagPath });
